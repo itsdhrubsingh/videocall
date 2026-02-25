@@ -13,8 +13,12 @@ let isCaller = false;
 const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
 async function startLocalStream() {
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  localVideo.srcObject = localStream;
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    localVideo.srcObject = localStream;
+  } catch (e) {
+    throw new Error('Could not access camera/microphone: ' + e.message);
+  }
 }
 
 function createPeerConnection() {
@@ -30,45 +34,53 @@ joinBtn.onclick = async () => {
   const room = document.getElementById('room').value.trim();
   if (!room) return alert('Enter Meeting ID');
 
-  await startLocalStream();
-  socket = io();
+  try {
+    await startLocalStream();
+    socket = io();
 
-  socket.emit('join', room);
+    socket.on('connect', () => console.log('Socket connected'));
+    socket.on('connect_error', (err) => console.log('Connection error:', err));
 
-  socket.on('created', () => { console.log('Room created, waiting for peer'); });
+    socket.emit('join', room);
 
-  socket.on('joined', () => {
-    console.log('Joined existing room — you should initiate the call');
-    isCaller = true;
-  });
+    socket.on('created', () => { console.log('Room created, waiting for peer'); });
 
-  socket.on('ready', async () => {
-    if (!pc) createPeerConnection();
-    if (isCaller) {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('signal', { type: 'offer', sdp: offer });
-    }
-  });
+    socket.on('joined', () => {
+      console.log('Joined existing room — you should initiate the call');
+      isCaller = true;
+    });
 
-  socket.on('signal', async msg => {
-    if (msg.type === 'offer') {
+    socket.on('ready', async () => {
+      console.log('Ready to start call');
       if (!pc) createPeerConnection();
-      await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('signal', { type: 'answer', sdp: answer });
-    } else if (msg.type === 'answer') {
-      await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-    } else if (msg.type === 'candidate') {
-      try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
-    }
-  });
+      if (isCaller) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('signal', { type: 'offer', sdp: offer });
+      }
+    });
 
-  socket.on('peer-left', () => { cleanupPeer(); });
+    socket.on('signal', async msg => {
+      if (msg.type === 'offer') {
+        if (!pc) createPeerConnection();
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('signal', { type: 'answer', sdp: answer });
+      } else if (msg.type === 'answer') {
+        await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+      } else if (msg.type === 'candidate') {
+        try { await pc.addIceCandidate(msg.candidate); } catch (e) { console.warn(e); }
+      }
+    });
 
-  joinDiv.hidden = true;
-  callDiv.hidden = false;
+    socket.on('peer-left', () => { cleanupPeer(); });
+
+    joinDiv.hidden = true;
+    callDiv.hidden = false;
+  } catch (e) {
+    alert('Error joining call: ' + e.message);
+  }
 };
 
 leaveBtn.onclick = () => {
